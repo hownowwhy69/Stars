@@ -1,21 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Telegram Unified Bot (Referral + Stars Payment System + Multi-Admin + Notifications) - stars.py
-Built with python-telegram-bot v21+ and Motor (MongoDB Async)
+Single Unified Telegram Bot Script
+Runs both Main Bot and Payment Receiver Bot concurrently.
 """
 
 import logging
 import asyncio
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    LabeledPrice,
-    InputMediaVideo,
-    InputMediaPhoto,
-    InputMediaDocument
+    BotCommand,
+    LabeledPrice
 )
 from telegram.ext import (
     ApplicationBuilder,
@@ -28,525 +26,480 @@ from telegram.ext import (
 )
 from motor.motor_asyncio import AsyncIOMotorClient
 
-# ----------------- CONFIGURATION -----------------
-BOT_TOKEN = "8968775484:AAE0QzNvQcXeVei8f6LGaGCXbiq_k7WhaCw"  # Apna Telegram Bot Token yahan dalein
-ADMIN_ID = "938899359"            # Apna Telegram Numeric Owner/Admin ID yahan dalein
-MONGO_URL = "mongodb+srv://aaravkeshav92_db_user:VYpt1A4TTJvWJynJ@cluster0.3h5mg56.mongodb.net/?appName=Cluster0"  # MongoDB URI
+# ==================== CONFIGURATION ====================
+MAIN_BOT_TOKEN = "8968775484:AAE0QzNvQcXeVei8f6LGaGCXbiq_k7WhaCw"
+PAYMENT_BOT_TOKEN = "8935465779:AAHCiegWcNpLiqSX3bbEMfYSRAl9P8UFagg"
+ADMIN_ID = 938899359
+MONGO_URL = "mongodb+srv://aaravkeshav92_db_user:VYpt1A4TTJvWJynJ@cluster0.3h5mg56.mongodb.net/?appName=Cluster0"
 DB_NAME = "telegram_unified_bot"
 
-# Enable logging for debugging and tracking
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Initialize Async MongoDB Client
+# MongoDB Setup
 db_client = AsyncIOMotorClient(MONGO_URL)
 db = db_client[DB_NAME]
 users_col = db["users"]
 config_col = db["config"]
 videos_col = db["videos"]
-admins_col = db["admins"]  # Collection to store dynamic admin user IDs
+admins_col = db["admins"]
 
-# ----------------- INITIAL SETUP / HELPERS -----------------
 
+# ==================== COMMON HELPERS ====================
 async def is_admin(user_id: int) -> bool:
-    """Checks if a user is the main owner or an added admin."""
     if user_id == ADMIN_ID:
         return True
     admin_doc = await admins_col.find_one({"user_id": user_id})
     return bool(admin_doc)
 
 async def get_config() -> Dict[str, Any]:
-    """Fetches configuration from database, creates default if not exists."""
     config = await config_col.find_one({"_id": "settings"})
     if not config:
         config = {
             "_id": "settings",
+            "payment_bot_username": "PaymentBotUsername",
+            "ref_rewards": {"2": 5, "5": 10, "10": 20},
             "packages": {
-                "1": {"stars": 50, "videos": 5, "link": "https://t.me/+example_channel_1"},
-                "2": {"stars": 150, "videos": 20, "link": "https://t.me/+example_channel_2"},
-                "3": {"stars": 300, "videos": 50, "link": "https://t.me/+example_channel_3"}
-            },
-            "button_counts": {"small": 5, "large": 10}
+                "1": {"stars": 50, "videos": "6", "link": "https://t.me/+example_1"},
+                "2": {"stars": 100, "videos": "14", "link": "https://t.me/+example_2"},
+                "3": {"stars": 200, "videos": "31", "link": "https://t.me/+example_3"},
+                "4": {"stars": 500, "videos": "179", "link": "https://t.me/+example_4"},
+                "5": {"stars": 1000, "videos": "349", "link": "https://t.me/+example_5"},
+                "6": {"stars": 5000, "videos": "1.5k", "link": "https://t.me/+example_6"},
+                "7": {"stars": 10000, "videos": "5k", "link": "https://t.me/+example_7"}
+            }
         }
         await config_col.insert_one(config)
     return config
 
-async def get_user(user_id: int, user_name: str = "User") -> tuple[Dict[str, Any], bool]:
-    """Fetches user document from DB or initializes a new user profile. Returns (user_doc, is_new)."""
-    user = await users_col.find_one({"user_id": user_id})
-    if not user:
-        user = {
-            "user_id": user_id,
-            "referred_by": None,
-            "referral_count": 0,
-            "unlocked_videos": 0,
-            "balance": 0,
-            "name": user_name
-        }
-        await users_col.insert_one(user)
-        return user, True
-    return user, False
+def get_rank_info(ref_count: int) -> tuple[str, int]:
+    if ref_count < 2: return "Bronze (0/2)", 2
+    elif ref_count < 5: return "Silver (0/5)", 5
+    elif ref_count < 10: return "Gold (0/10)", 10
+    elif ref_count < 25: return "Diamond (0/25)", 25
+    elif ref_count < 50: return "Crystal (0/50)", 50
+    elif ref_count < 100: return "Champion (0/100)", 100
+    else: return "Legend", 200
 
-async def notify_all_admins(context: ContextTypes.DEFAULT_TYPE, text: str):
-    """Sends notification text to the main owner and all dynamic admins."""
-    admin_ids = {ADMIN_ID}
-    async for adm in admins_col.find({}):
-        admin_ids.add(adm["user_id"])
+def build_main_menu_keyboard(ref_count: int, is_user_admin: bool) -> InlineKeyboardMarkup:
+    rank_title, _ = get_rank_info(ref_count)
     
-    for adm_id in admin_ids:
-        try:
-            await context.bot.send_message(chat_id=adm_id, text=text)
-        except Exception as e:
-            logger.error(f"Failed to send notification to admin {adm_id}: {e}")
+    keyboard = [
+        [InlineKeyboardButton(f"🖥️ INVITE FRIENDS | Next: 🥈 {rank_title}", callback_data="menu_link")],
+        [InlineKeyboardButton(f"❤️ My Referral Progress ({ref_count})", callback_data="menu_referral")],
+        [InlineKeyboardButton("⭐ 50 Stars = 6 Videos", callback_data="buy_pkg_1")],
+        [InlineKeyboardButton("⭐ 100 Stars = 14 Videos", callback_data="buy_pkg_2")],
+        [InlineKeyboardButton("⭐ 200 Stars = 31 Videos", callback_data="buy_pkg_3")],
+        [InlineKeyboardButton("⭐ 500 Stars = 179 Videos", callback_data="buy_pkg_4")],
+        [InlineKeyboardButton("⭐ 1k Stars = 349 Videos", callback_data="buy_pkg_5")],
+        [InlineKeyboardButton("⭐ 5k Stars = 1.5k Videos", callback_data="buy_pkg_6")],
+        [InlineKeyboardButton("⭐ 10k Stars = 5k Videos", callback_data="buy_pkg_7")],
+        [InlineKeyboardButton("📊 Referral Leaderboard", callback_data="menu_leaderboard")]
+    ]
+    if is_user_admin:
+        keyboard.append([InlineKeyboardButton("🛠️ Admin Control Panel", callback_data="menu_admin")])
+        
+    return InlineKeyboardMarkup(keyboard)
 
-# ----------------- COMMAND HANDLERS: START & REFERRAL -----------------
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message
-    user_id = query.from_user.id
-    user_name = query.from_user.first_name or "User"
+# ==================== MAIN BOT HANDLERS ====================
+async def start_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
     args = context.args
 
-    user, is_new = await get_user(user_id, user_name)
+    existing_user = await users_col.find_one({"user_id": user_id})
 
-    # If new user, broadcast notification to owner/admins matching the requested format
-    if is_new:
-        total_users = await users_col.count_documents({})
-        notif_text = f"🆕 New User!\nTotal: [{total_users}]\nName: {user_name}"
-        await notify_all_admins(context, notif_text)
+    if not existing_user:
+        referrer_id = None
+        if args and args[0].isdigit():
+            possible_ref = int(args[0])
+            if possible_ref != user_id:
+                referrer_id = possible_ref
 
-    # Referral Tracking Logic
-    if args and not user.get("referred_by") and user["referral_count"] == 0:
+        new_user = {
+            "user_id": user_id,
+            "first_name": user.first_name,
+            "username": user.username,
+            "referrals": 0,
+            "referred_by": referrer_id,
+            "claimed_milestones": []
+        }
+        await users_col.insert_one(new_user)
+
+        if referrer_id:
+            await users_col.update_one({"user_id": referrer_id}, {"$inc": {"referrals": 1}})
+            try:
+                await context.bot.send_message(
+                    chat_id=referrer_id,
+                    text=f"🎉 <b>New Referral!</b> User {user.first_name} joined using your link!",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+
+        # 🔔 New User Joined Admin Alert
+        notify_msg = (
+            f"🔔 <b>New User Joined Bot!</b>\n\n"
+            f"👤 <b>Name:</b> {user.first_name}\n"
+            f"🏷️ <b>Username:</b> @{user.username if user.username else 'N/A'}\n"
+            f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+            f"🔗 <b>Referred By:</b> <code>{referrer_id if referrer_id else 'Direct'}</code>"
+        )
         try:
-            referrer_id = int(args[0])
-            if referrer_id != user_id:
-                referrer = await users_col.find_one({"user_id": referrer_id})
-                if referrer:
-                    # Set referrer for current user
-                    await users_col.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"referred_by": referrer_id}}
-                    )
-                    # Increment referrer count and unlock sequential video reward
-                    new_ref_count = referrer.get("referral_count", 0) + 1
-                    new_unlocked = referrer.get("unlocked_videos", 0) + 1
-                    
-                    await users_col.update_one(
-                        {"user_id": referrer_id},
-                        {"$set": {"referral_count": new_ref_count, "unlocked_videos": new_unlocked}}
-                    )
-                    
-                    # Notify Referrer & Send Unlocked Video Automatically if available
-                    try:
-                        await context.bot.send_message(
-                            chat_id=referrer_id,
-                            text=f"🎉 Badhai ho! Aapke referral link se ek naye user ne join kiya hai.\n👥 Total Referrals: {new_ref_count}\n🎬 New video unlocked! Serial #{new_unlocked}"
-                        )
-                        vid_doc = await videos_col.find_one({"serial_no": new_unlocked})
-                        if vid_doc:
-                            f_id = vid_doc["file_id"]
-                            f_type = vid_doc.get("file_type", "video")
-                            if f_type == "document":
-                                await context.bot.send_document(chat_id=referrer_id, document=f_id, caption=f"🎁 Referral Reward: Video #{new_unlocked}")
-                            elif f_type == "photo":
-                                await context.bot.send_photo(chat_id=referrer_id, photo=f_id, caption=f"🎁 Referral Reward: Video #{new_unlocked}")
-                            else:
-                                await context.bot.send_video(chat_id=referrer_id, video=f_id, caption=f"🎁 Referral Reward: Video #{new_unlocked}")
-                    except Exception as e:
-                        logger.error(f"Error rewarding referrer: {e}")
-        except ValueError:
-            pass
+            await context.bot.send_message(chat_id=ADMIN_ID, text=notify_msg, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Failed to notify admin: {e}")
 
-    bot_username = (await context.bot.get_me()).username
-    ref_link = f"https://t.me/{bot_username}?start={user_id}"
-
-    keyboard = [
-        [InlineKeyboardButton("🎁 Referral Status & Videos", callback_data="menu_referral")],
-        [InlineKeyboardButton("⭐ Buy Premium via Telegram Stars", callback_data="menu_packages")],
-        [InlineKeyboardButton("🔗 My Invite Link", callback_data="menu_link")]
-    ]
-    
-    # Add Admin Panel button if the user is an admin or owner
-    if await is_admin(user_id):
-        keyboard.insert(0, [InlineKeyboardButton("🛠️ Admin Panel", callback_data="menu_admin")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    user_data = await users_col.find_one({"user_id": user_id})
+    ref_count = user_data.get("referrals", 0) if user_data else 0
+    user_is_admin = await is_admin(user_id)
 
     welcome_text = (
-        f"👋 <b>Welcome to the Unified Bot!</b>\n\n"
-        f"• Doston ko invite karein aur free sequential videos automatically unlock karein.\n"
-        f"• Ya fir Telegram Stars ke zariye instant premium packages purchase karke private channel access payein.\n\n"
-        f"🔗 <b>Aapka Referral Link:</b>\n<code>{ref_link}</code>"
+        "❤️ <b>Welcome to the Premium Video Club!</b> 👋\n\n"
+        "🔥 <b>Invite friends and earn FREE premium videos!</b>\n\n"
+        "⭐ <b>Start inviting and unlock your rewards!</b> ⭐"
+    )
+    await update.message.reply_text(
+        welcome_text,
+        reply_markup=build_main_menu_keyboard(ref_count, user_is_admin),
+        parse_mode="HTML"
     )
 
-    await query.reply_text(welcome_text, reply_markup=reply_markup, parse_mode="HTML")
+async def menu_link_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    bot_username = (await context.bot.get_me()).username
+    ref_link = f"https://t.me/{bot_username}?start={user_id}"
+    text = f"🔗 <b>Your Referral Link:</b>\n\n<code>{ref_link}</code>\n\nShare this link to earn free rewards!"
+    keyboard = [[InlineKeyboardButton("🗑️ Close", callback_data="menu_home")]]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
-# ----------------- CALLBACK & MENU MANAGEMENT -----------------
+async def menu_referral_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_referral_dashboard(update.effective_user.id, update.message.reply_text)
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def show_referral_dashboard(user_id: int, send_func):
+    user = await users_col.find_one({"user_id": user_id})
+    config = await get_config()
+    
+    refs = user.get("referrals", 0) if user else 0
+    claimed = user.get("claimed_milestones", []) if user else []
+    ref_rewards = config.get("ref_rewards", {})
+
+    text = (
+        f"🏆 <b>Referral Progress Dashboard</b>\n\n"
+        f"👥 Total Invites: <b>{refs}</b>\n\n"
+        f"<b>Milestones & Rewards:</b>\n"
+    )
+    keyboard = []
+
+    for req_invites, vid_count in sorted(ref_rewards.items(), key=lambda x: int(x[0])):
+        req_int = int(req_invites)
+        if req_invites in claimed:
+            text += f"• <b>{req_invites} Invites:</b> {vid_count} Videos — ✅ Claimed\n"
+        elif refs >= req_int:
+            text += f"• <b>{req_invites} Invites:</b> {vid_count} Videos — 🎁 READY TO CLAIM\n"
+            keyboard.append([InlineKeyboardButton(f"🎁 Claim {vid_count} Videos ({req_invites} Invites)", callback_data=f"claim_ref_{req_invites}")])
+        else:
+            text += f"• <b>{req_invites} Invites:</b> {vid_count} Videos — 🔒 Need {req_int - refs} more\n"
+
+    keyboard.append([InlineKeyboardButton("🗑️ Close", callback_data="menu_home")])
+    await send_func(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+async def main_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
     user_id = query.from_user.id
 
-    if data == "menu_admin":
-        if not await is_admin(user_id):
-            await query.answer("❌ Aap authorized admin nahi hain.", show_alert=True)
-            return
-        
-        text = "🛠️ <b>Admin Control Panel</b>\n\nAap yahan se packages, videos manage kar sakte hain ya naye admins add kar sakte hain."
-        keyboard = [
-            [InlineKeyboardButton("📋 Admin Help / Commands", callback_data="admin_help")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_home")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-
-    elif data == "admin_help":
-        if not await is_admin(user_id):
-            return
-        text = (
-            "🛠️ <b>Admin Commands List:</b>\n\n"
-            "• <code>/addadmin [user_id]</code> - Kisi user ko admin banayein\n"
-            "• <code>/removeadmin [user_id]</code> - Admin rights hatayein\n"
-            "• <code>/setpackage [ID] [Stars] [Videos] [Link]</code> - Package setup karein\n"
-            "• <code>/setvideos [small/large] [count]</code> - Button count set karein\n"
-            "• <code>/addvid [Serial_No]</code> (Media ke sath bhejein) - Video add karein"
-        )
-        keyboard = [[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data="menu_admin")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-
-    elif data == "menu_referral":
-        user, _ = await get_user(user_id)
-        refs = user.get("referral_count", 0)
-        unlocked = user.get("unlocked_videos", 0)
-        
-        text = (
-            f"📊 <b>Aapka Referral Dashboard</b>\n\n"
-            f"👥 Total Referrals: <b>{refs}</b>\n"
-            f"🎬 Unlocked Videos: <b>{unlocked}</b>\n\n"
-            f"Har successful referral par aapko agla sequential video automatically mil jata hai!"
-        )
-        keyboard = [
-            [InlineKeyboardButton("📂 View My Unlocked Videos", callback_data="view_my_videos")],
-            [InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_home")]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
-
-    elif data == "view_my_videos":
-        user, _ = await get_user(user_id)
-        unlocked = user.get("unlocked_videos", 0)
-        if unlocked == 0:
-            await query.answer("❌ Aapne abhi tak koi video unlock nahi ki hai. Doston ko invite karein!", show_alert=True)
-            return
-        
-        await query.message.reply_text(f"📥 Aapke unlocked videos (1 se {unlocked} tak) bhej rahe hain...")
-        cursor = videos_col.find({"serial_no": {"$lte": unlocked}}).sort("serial_no", 1)
-        async for vid in cursor:
-            try:
-                f_id = vid["file_id"]
-                f_type = vid.get("file_type", "video")
-                s_no = vid["serial_no"]
-                if f_type == "document":
-                    await context.bot.send_document(chat_id=user_id, document=f_id, caption=f"🎬 Video #{s_no}")
-                elif f_type == "photo":
-                    await context.bot.send_photo(chat_id=user_id, photo=f_id, caption=f"🎬 Video #{s_no}")
-                else:
-                    await context.bot.send_video(chat_id=user_id, video=f_id, caption=f"🎬 Video #{s_no}")
-                await asyncio.sleep(0.5)
-            except Exception as e:
-                logger.error(f"Error sending video #{vid.get('serial_no')}: {e}")
-
-    elif data == "menu_packages":
-        config = await get_config()
-        packages = config.get("packages", {})
-        
-        keyboard = []
-        for pkg_id, pkg_info in packages.items():
-            btn_text = f"⭐ {pkg_info['stars']} Stars - {pkg_info['videos']} Videos"
-            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"buy_pkg_{pkg_id}")])
-        
-        keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_home")])
-        
-        await query.edit_message_text(
-            "⭐ <b>Available Premium Packages</b>\n\nNeeche diye gaye package ko select karein aur Telegram Stars ke zariye instant payment karein:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+    if data == "menu_home":
+        await query.message.delete()
 
     elif data == "menu_link":
         bot_username = (await context.bot.get_me()).username
         ref_link = f"https://t.me/{bot_username}?start={user_id}"
-        text = f"🔗 <b>Aapka Unique Referral Link:</b>\n\n<code>{ref_link}</code>\n\nIse apne doston aur groups ke sath share karein!"
-        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data="menu_home")]]
+        user = await users_col.find_one({"user_id": user_id})
+        ref_count = user.get("referrals", 0) if user else 0
+        rank_title, _ = get_rank_info(ref_count)
+
+        text = (
+            f"🔗 <b>Your Referral Link:</b>\n"
+            f"<code>{ref_link}</code>\n\n"
+            f"📊 <b>Next:</b> 🥈 {rank_title} — {ref_count} invites\n\n"
+            f"Share this link and earn FREE videos when friends join! 🎁"
+        )
+        keyboard = [[InlineKeyboardButton("🗑️ Close", callback_data="menu_home")]]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
-    elif data == "menu_home":
-        bot_username = (await context.bot.get_me()).username
-        ref_link = f"https://t.me/{bot_username}?start={user_id}"
-        keyboard = [
-            [InlineKeyboardButton("🎁 Referral Status & Videos", callback_data="menu_referral")],
-            [InlineKeyboardButton("⭐ Buy Premium via Telegram Stars", callback_data="menu_packages")],
-            [InlineKeyboardButton("🔗 My Invite Link", callback_data="menu_link")]
-        ]
-        if await is_admin(user_id):
-            keyboard.insert(0, [InlineKeyboardButton("🛠️ Admin Panel", callback_data="menu_admin")])
-            
-        text = f"👋 <b>Main Menu</b>\n\nAapka Referral Link:\n<code>{ref_link}</code>"
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+    elif data == "menu_referral":
+        await show_referral_dashboard(user_id, query.message.reply_text)
+
+    elif data.startswith("claim_ref_"):
+        req_invites = data.split("_")[2]
+        user = await users_col.find_one({"user_id": user_id})
+        config = await get_config()
+
+        refs = user.get("referrals", 0)
+        claimed = user.get("claimed_milestones", [])
+        ref_rewards = config.get("ref_rewards", {})
+        vid_count = ref_rewards.get(req_invites, 0)
+
+        if refs < int(req_invites):
+            return await query.answer("❌ Insufficient invites!", show_alert=True)
+        if req_invites in claimed:
+            return await query.answer("⚠️ Already claimed!", show_alert=True)
+
+        await users_col.update_one({"user_id": user_id}, {"$push": {"claimed_milestones": req_invites}})
+        await query.answer("🎉 Reward Claimed!", show_alert=True)
+        await query.message.reply_text(f"🎉 Sending <b>{vid_count} Videos</b> now...", parse_mode="HTML")
+
+        videos = await videos_col.find().limit(vid_count).to_list(length=vid_count)
+        for vid in videos:
+            try:
+                await context.bot.send_video(chat_id=user_id, video=vid["file_id"])
+                await asyncio.sleep(0.5)
+            except Exception:
+                pass
 
     elif data.startswith("buy_pkg_"):
         pkg_id = data.split("_")[2]
         config = await get_config()
         pkg = config["packages"].get(pkg_id)
-        
-        if not pkg:
-            await query.edit_message_text("❌ Package not found.")
-            return
+        pay_bot = config.get("payment_bot_username", "PaymentBot")
 
-        title = f"Premium Package {pkg_id} ({pkg['videos']} Videos)"
-        description = f"Instant access to exclusive content: {pkg['videos']} videos + private channel invite link."
-        payload = f"stars_pkg_{pkg_id}_{user_id}"
-        currency = "XTR"  # Native Telegram Stars currency code
-        prices = [LabeledPrice("Telegram Stars", pkg["stars"])]
+        if not pkg: return
 
-        await context.bot.send_invoice(
-            chat_id=user_id,
-            title=title,
-            description=description,
-            payload=payload,
-            provider_token="",  # Must be left empty string for Telegram Stars invoices
-            currency=currency,
-            prices=prices
+        stars = pkg["stars"]
+        videos = pkg["videos"]
+
+        msg_text = (
+            f"📦 <b>{videos} Media Pack</b>\n\n"
+            f"Get {videos} exclusive media items instantly!\n\n"
+            f"💰 <b>Price:</b> {stars} Stars ⭐\n\n"
+            f"🔗 Click the button below to complete payment securely via our Payment Bot."
         )
+        pay_link = f"https://t.me/{pay_bot}?start=pkg_{pkg_id}"
+        keyboard = [
+            [InlineKeyboardButton(f"💳 Pay {stars} Stars via Payment Bot", url=pay_link)],
+            [InlineKeyboardButton("❌ Cancel", callback_data="menu_home")]
+        ]
+        await query.message.reply_text(msg_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
-# ----------------- TELEGRAM STARS PAYMENT HANDLERS -----------------
-
-async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.pre_checkout_query
-    await query.answer(ok=True)
-
-async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    payment = update.message.successful_payment
-    payload = payment.invoice_payload
-    user_id = update.message.from_user.id
-
-    if payload.startswith("stars_pkg_"):
-        parts = payload.split("_")
-        pkg_id = parts[2]
-        
+    elif data == "menu_admin":
+        if not await is_admin(user_id): return
+        total_users = await users_col.count_documents({})
+        total_vids = await videos_col.count_documents({})
         config = await get_config()
-        pkg = config["packages"].get(pkg_id)
-        
-        if pkg:
-            channel_link = pkg["link"]
-            success_text = (
-                f"✅ <b>Payment Successful!</b>\n\n"
-                f"Aapne successfully Telegram Stars ke zariye package purchase kar liya hai.\n\n"
-                f"📥 <b>Aapka Private Channel Invite Link:</b>\n{channel_link}"
-            )
-            await update.message.reply_text(success_text, parse_mode="HTML")
-        else:
-            await update.message.reply_text("✅ Payment successful, par package configuration nahi mili. Kripya admin se contact karein.")
 
-# ----------------- ADMIN COMMAND HANDLERS -----------------
+        text = (
+            f"⚡ <b>SUPER ADMIN CONTROL PANEL</b> ⚡\n\n"
+            f"👥 Total Users: <b>{total_users}</b>\n"
+            f"🎬 Total Videos: <b>{total_vids}</b>\n"
+            f"🤖 Linked Payment Bot: <code>@{config.get('payment_bot_username')}</code>\n\n"
+            f"<b>Admin Commands:</b>\n"
+            f"• <code>/broadcast [msg]</code> - Broadcast message\n"
+            f"• <code>/setpaybot [username]</code> - Set Payment Bot\n"
+            f"• <code>/setpackage [ID] [Stars] [Videos] [Link]</code>\n"
+            f"• <code>/setrefreward [Invites] [Videos]</code>\n"
+            f"• <code>/addadmin [user_id]</code> | <code>/removeadmin [user_id]</code>\n"
+            f"• <code>/addvid [Serial_No]</code> (Reply/Send with video)"
+        )
+        keyboard = [[InlineKeyboardButton("🗑️ Close Panel", callback_data="menu_home")]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
-async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("❌ Sirf main owner hi naye admin add kar sakta hai.")
-        return
 
-    args = context.args
-    if not args:
-        await update.message.reply_text("⚠️ Usage: /addadmin [user_id]")
-        return
+# Admin Commands
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.message.from_user.id): return
+    text_to_send = " ".join(context.args)
+    if not text_to_send and not update.message.reply_to_message:
+        return await update.message.reply_text("⚠️ Usage: `/broadcast [message]`", parse_mode="Markdown")
 
-    try:
-        new_admin_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text("❌ User ID numeric honi chahiye.")
-        return
+    status_msg = await update.message.reply_text("🚀 Broadcasting...")
+    success, fail = 0, 0
 
-    await admins_col.update_one(
-        {"user_id": new_admin_id},
-        {"$set": {"user_id": new_admin_id}},
-        upsert=True
-    )
-    await update.message.reply_text(f"✅ User {new_admin_id} ko successfully admin bana diya gaya hai!")
+    async for u in users_col.find({}):
+        try:
+            if update.message.reply_to_message:
+                await context.bot.copy_message(chat_id=u["user_id"], from_chat_id=update.message.chat_id, message_id=update.message.reply_to_message.message_id)
+            else:
+                await context.bot.send_message(chat_id=u["user_id"], text=text_to_send, parse_mode="HTML")
+            success += 1
+            await asyncio.sleep(0.04)
+        except Exception:
+            fail += 1
 
-async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("❌ Sirf main owner hi admin remove kar sakta hai.")
-        return
+    await status_msg.edit_text(f"✅ <b>Complete!</b>\nSuccessful: {success}\nFailed: {fail}", parse_mode="HTML")
 
-    args = context.args
-    if not args:
-        await update.message.reply_text("⚠️ Usage: /removeadmin [user_id]")
-        return
-
-    try:
-        target_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text("❌ User ID numeric honi chahiye.")
-        return
-
-    result = await admins_col.deleteOne({"user_id": target_id}) if hasattr(admins_col, "deleteOne") else await admins_col.delete_one({"user_id": target_id})
-    await update.message.reply_text(f"✅ User {target_id} ke admin rights hata diye gaye hain!")
+async def set_paybot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.message.from_user.id): return
+    if not context.args: return await update.message.reply_text("⚠️ Usage: `/setpaybot BotUsername`", parse_mode="Markdown")
+    bot_user = context.args[0].replace("@", "")
+    await config_col.update_one({"_id": "settings"}, {"$set": {"payment_bot_username": bot_user}}, upsert=True)
+    await update.message.reply_text(f"✅ Payment bot updated to @{bot_user}")
 
 async def set_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if not await is_admin(user_id):
-        await update.message.reply_text("❌ Aap authorized admin nahi hain.")
-        return
-
-    args = context.args
-    if len(args) < 4:
-        await update.message.reply_text("⚠️ Usage: /setpackage [Pkg_ID] [Stars] [Videos] [Channel_Link]")
-        return
-
-    pkg_id = args[0]
-    try:
-        stars = int(args[1])
-        videos = int(args[2])
-        link = args[3]
-    except ValueError:
-        await update.message.reply_text("❌ Stars aur Videos ki value numeric honi chahiye.")
-        return
-
+    if not await is_admin(update.message.from_user.id): return
+    if len(context.args) < 4: return await update.message.reply_text("⚠️ Usage: `/setpackage [ID] [Stars] [Videos] [Link]`", parse_mode="Markdown")
+    
+    pkg_id, stars, vids, link = context.args[0], int(context.args[1]), context.args[2], context.args[3]
     await config_col.update_one(
         {"_id": "settings"},
-        {"$set": {f"packages.{pkg_id}": {"stars": stars, "videos": videos, "link": link}}},
+        {"$set": {f"packages.{pkg_id}": {"stars": stars, "videos": vids, "link": link}}},
         upsert=True
     )
-    await update.message.reply_text(f"✅ Package {pkg_id} successfully update kar diya gaya hai!")
+    await update.message.reply_text(f"✅ Package {pkg_id} updated successfully!")
 
-async def set_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if not await is_admin(user_id):
-        await update.message.reply_text("❌ Aap authorized admin nahi hain.")
-        return
-
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("⚠️ Usage: /setvideos [small/large] [count]")
-        return
-
-    size_type = args[0].lower()
-    try:
-        count = int(args[1])
-    except ValueError:
-        await update.message.reply_text("❌ Count numeric hona chahiye.")
-        return
-
-    if size_type not in ["small", "large"]:
-        await update.message.reply_text("❌ Type sirf 'small' ya 'large' ho sakta hai.")
-        return
-
+async def set_ref_reward(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update.message.from_user.id): return
+    if len(context.args) < 2: return await update.message.reply_text("⚠️ Usage: `/setrefreward [Invites] [Videos]`", parse_mode="Markdown")
+    
+    invites, vids = context.args[0], int(context.args[1])
     await config_col.update_one(
         {"_id": "settings"},
-        {"$set": {f"button_counts.{size_type}": count}},
+        {"$set": {f"ref_rewards.{invites}": vids}},
         upsert=True
     )
-    await update.message.reply_text(f"✅ Button count for {size_type} updated to {count}!")
+    await update.message.reply_text(f"✅ Milestone set: {invites} invites = {vids} videos!")
+
+async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != ADMIN_ID: return
+    if not context.args: return await update.message.reply_text("⚠️ Usage: `/addadmin [user_id]`", parse_mode="Markdown")
+    
+    new_admin = int(context.args[0])
+    await admins_col.update_one({"user_id": new_admin}, {"$set": {"user_id": new_admin}}, upsert=True)
+    await update.message.reply_text(f"✅ User {new_admin} added as Admin!")
 
 async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if not await is_admin(user_id):
-        await update.message.reply_text("❌ Aap authorized admin nahi hain.")
-        return
-
-    message = update.message
-    if not message.video and not message.document and not message.photo:
-        await update.message.reply_text("⚠️ Kripya media file (video/document/photo) ke sath command bhejein:\n/addvid [Serial_No]")
-        return
-
-    args = context.args
-    if not args:
-        await update.message.reply_text("⚠️ Usage: /addvid [Serial_No]")
-        return
-
-    try:
-        serial_no = int(args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Count numeric hona chahiye.")
-        return
-
-    if size_type not in ["small", "large"]:
-        await update.message.reply_text("❌ Type sirf 'small' ya 'large' ho sakta hai.")
-        return
-
-    await config_col.update_one(
-        {"_id": "settings"},
-        {"$set": {f"button_counts.{size_type}": count}},
-        upsert=True
-    )
-    await update.message.reply_text(f"✅ Button count for {size_type} updated to {count}!")
-
-async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    if not await is_admin(user_id):
-        await update.message.reply_text("❌ Aap authorized admin nahi hain.")
-        return
-
-    message = update.message
-    if not message.video and not message.document and not message.photo:
-        await update.message.reply_text("⚠️ Kripya media file (video/document/photo) ke sath command bhejein:\n/addvid [Serial_No]")
-        return
-
-    args = context.args
-    if not args:
-        await update.message.reply_text("⚠️ Usage: /addvid [Serial_No]")
-        return
-
-    try:
-        serial_no = int(args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Serial number numeric hona chahiye.")
-        return
-
-    file_id = None
-    file_type = "video"
-    if message.video:
-        file_id = message.video.file_id
-    elif message.document:
-        file_id = message.document.file_id
-        file_type = "document"
-    elif message.photo:
-        file_id = message.photo[-1].file_id
-        file_type = "photo"
-
+    if not await is_admin(update.message.from_user.id): return
+    msg = update.message
+    if not msg.video or not context.args:
+        return await update.message.reply_text("⚠️ Send video with `/addvid [Serial_No]`", parse_mode="Markdown")
+    
+    serial = int(context.args[0])
     await videos_col.update_one(
-        {"serial_no": serial_no},
-        {"$set": {"file_id": file_id, "file_type": file_type}},
+        {"serial_no": serial},
+        {"$set": {"file_id": msg.video.file_id}},
         upsert=True
     )
-    await update.message.reply_text(f"✅ Video with serial #{serial_no} successfully database mein store ho gayi hai!")
+    await update.message.reply_text(f"✅ Video #{serial} stored!")
 
-# ----------------- MAIN ENTRYPOINT -----------------
+async def post_init(application):
+    commands = [
+        BotCommand("start", "Welcome & referral rewards"),
+        BotCommand("invite", "Get your referral link"),
+        BotCommand("stats", "Your stats & tier progress")
+    ]
+    await application.bot.set_my_commands(commands)
 
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Command Handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addadmin", add_admin))
-    app.add_handler(CommandHandler("removeadmin", remove_admin))
-    app.add_handler(CommandHandler("setpackage", set_package))
-    app.add_handler(CommandHandler("setvideos", set_videos))
-    app.add_handler(CommandHandler("addvid", add_video))
+# ==================== PAYMENT BOT HANDLERS ====================
+async def start_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
     
-    # Callback Query Handler for Menus & Buttons
-    app.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Telegram Stars Payment Handlers
-    app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+    if args and args[0].startswith("pkg_"):
+        pkg_id = args[0].split("_")[1]
+        
+        config = await config_col.find_one({"_id": "settings"})
+        pkg = config["packages"].get(pkg_id) if config else None
+        
+        if pkg:
+            stars = pkg["stars"]
+            videos = pkg["videos"]
+            
+            title = f"📦 {videos} Media Pack"
+            description = f"Get {videos} exclusive media items instantly! — Pay with the button below 👇👇"
+            payload = f"stars_payload_pkg_{pkg_id}_{update.effective_user.id}"
+            prices = [LabeledPrice("Telegram Stars", stars)]
+            
+            await context.bot.send_invoice(
+                chat_id=update.effective_chat.id,
+                title=title,
+                description=description,
+                payload=payload,
+                provider_token="",  # Blank for Telegram Stars (XTR)
+                currency="XTR",
+                prices=prices
+            )
+            return
 
-    logger.info("Bot is starting and polling for updates...")
-    app.run_polling()
+    await update.message.reply_text("👋 Payment Receiver Bot for Vidmatrixbot.")
+
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.pre_checkout_query.answer(ok=True)
+
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.message.successful_payment
+    payload = payment.invoice_payload
+    
+    if "stars_payload_pkg_" in payload:
+        pkg_id = payload.split("_")[3]
+        
+        config = await config_col.find_one({"_id": "settings"})
+        pkg = config["packages"].get(pkg_id) if config else None
+        
+        channel_link = pkg.get("link", "https://t.me/your_channel") if pkg else "https://t.me/your_channel"
+        
+        text = (
+            "🎉 <b>Thanks for purchasing our content!</b>\n\n"
+            "Join this channel for content using the button below 👇"
+        )
+        keyboard = [[InlineKeyboardButton("🚀 Join Channel Now", url=channel_link)]]
+        
+        await update.message.reply_text(
+            text, 
+            reply_markup=InlineKeyboardMarkup(keyboard), 
+            parse_mode="HTML"
+        )
+
+
+# ==================== MAIN CONCURRENT RUNNER ====================
+async def main():
+    # 1. Build Main Bot Application
+    app_main = ApplicationBuilder().token(MAIN_BOT_TOKEN).post_init(post_init).build()
+    app_main.add_handler(CommandHandler("start", start_main))
+    app_main.add_handler(CommandHandler("invite", menu_link_command))
+    app_main.add_handler(CommandHandler("stats", menu_referral_command))
+    app_main.add_handler(CommandHandler("broadcast", broadcast_command))
+    app_main.add_handler(CommandHandler("setpaybot", set_paybot))
+    app_main.add_handler(CommandHandler("setpackage", set_package))
+    app_main.add_handler(CommandHandler("setrefreward", set_ref_reward))
+    app_main.add_handler(CommandHandler("addadmin", add_admin))
+    app_main.add_handler(CommandHandler("addvid", add_video))
+    app_main.add_handler(CallbackQueryHandler(main_button_handler))
+
+    # 2. Build Payment Bot Application
+    app_pay = ApplicationBuilder().token(PAYMENT_BOT_TOKEN).build()
+    app_pay.add_handler(CommandHandler("start", start_payment))
+    app_pay.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app_pay.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
+
+    # 3. Start Both Bots Concurrently
+    await app_main.initialize()
+    await app_main.start()
+    await app_main.updater.start_polling()
+
+    await app_pay.initialize()
+    await app_pay.start()
+    await app_pay.updater.start_polling()
+
+    logger.info("🚀 Both Main Bot and Payment Bot are now running concurrently!")
+
+    # Keep async loop running
+    stop_event = asyncio.Event()
+    try:
+        await stop_event.wait()
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        await app_main.updater.stop()
+        await app_main.stop()
+        await app_main.shutdown()
+
+        await app_pay.updater.stop()
+        await app_pay.stop()
+        await app_pay.shutdown()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
