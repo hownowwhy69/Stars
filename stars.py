@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
 """
 Unified Telegram Bot Script (stars.py)
-Updated with:
-- Smart 'Back to Main Menu' navigation (No delete)
-- Clean button UI without extra color boxes (🟥, 🟦, 🟪)
-- Custom format_k() helper for displaying 1k, 5k, 10k on buttons
-- Exact numeric star values passed to Payment Gateway
+Updated:
+- Both Stars and Videos numbers >= 1000 formatted to 'k' format (e.g., 1.4k, 6k, 15k)
+- Numbers < 1000 remain as standard integers (50, 120, 250, 650)
+- Personal Referral Dashboard (only shows referred users)
 """
 
 import logging
@@ -55,18 +54,21 @@ WELCOME_TEXT = (
     "└ 💎 <b>25 invites</b> = 100 free videos\n"
     "└ 🔷 <b>50 invites</b> = 250 free videos\n"
     "└ 👑 <b>100 invites</b> = 600 free videos\n"
-    "└ 🔥 <b>200 invites</b> = 1400 free videos\n\n"
+    "└ 🔥 <b>200 invites</b> = 1.4k free videos\n\n"
     "⭐ <b>Start inviting and unlock your rewards!</b> ⭐"
 )
 
 # ==================== HELPERS ====================
 def format_k(num) -> str:
-    """Buttons par 1000 -> 1k, 5000 -> 5k, 10000 -> 10k dikhane ke liye helper"""
+    """1000 -> 1k, 1400 -> 1.4k, 6000 -> 6k display karne ke liye helper"""
     try:
-        val = int(num)
+        val = float(num)
         if val >= 1000:
-            return f"{val // 1000}k" if val % 1000 == 0 else f"{val / 1000}k"
-        return str(val)
+            val_k = val / 1000
+            if val_k.is_integer():
+                return f"{int(val_k)}k"
+            return f"{val_k:g}k"
+        return str(int(val)) if val.is_integer() else str(val)
     except (ValueError, TypeError):
         return str(num)
 
@@ -116,16 +118,17 @@ def build_main_menu_keyboard(ref_count: int, is_user_admin: bool, pkgs: dict) ->
         # Clean My Referral Progress Button
         [InlineKeyboardButton(f"❤️ My Referral Progress ({ref_count})", callback_data="menu_referral")],
         
-        # Star Packages with format_k (1k, 5k, 10k formatting for display)
-        [InlineKeyboardButton(f"⭐ {format_k(pkgs['1']['stars'])} Stars = {pkgs['1']['videos']} Videos", callback_data="buy_pkg_1")],
-        [InlineKeyboardButton(f"⭐ {format_k(pkgs['2']['stars'])} Stars = {pkgs['2']['videos']} Videos", callback_data="buy_pkg_2")],
-        [InlineKeyboardButton(f"⭐ {format_k(pkgs['3']['stars'])} Stars = {pkgs['3']['videos']} Videos", callback_data="buy_pkg_3")],
-        [InlineKeyboardButton(f"⭐ {format_k(pkgs['4']['stars'])} Stars = {pkgs['4']['videos']} Videos", callback_data="buy_pkg_4")],
-        [InlineKeyboardButton(f"⭐ {format_k(pkgs['5']['stars'])} Stars = {pkgs['5']['videos']} Videos", callback_data="buy_pkg_5")],
-        [InlineKeyboardButton(f"⭐ {format_k(pkgs['6']['stars'])} Stars = {pkgs['6']['videos']} Videos", callback_data="buy_pkg_6")],
-        [InlineKeyboardButton(f"⭐ {format_k(pkgs['7']['stars'])} Stars = {pkgs['7']['videos']} Videos 💎", callback_data="buy_pkg_7")],
+        # Star Packages (Formatted both Stars & Videos with format_k)
+        [InlineKeyboardButton(f"⭐ {format_k(pkgs['1']['stars'])} Stars = {format_k(pkgs['1']['videos'])} Videos", callback_data="buy_pkg_1")],
+        [InlineKeyboardButton(f"⭐ {format_k(pkgs['2']['stars'])} Stars = {format_k(pkgs['2']['videos'])} Videos", callback_data="buy_pkg_2")],
+        [InlineKeyboardButton(f"⭐ {format_k(pkgs['3']['stars'])} Stars = {format_k(pkgs['3']['videos'])} Videos", callback_data="buy_pkg_3")],
+        [InlineKeyboardButton(f"⭐ {format_k(pkgs['4']['stars'])} Stars = {format_k(pkgs['4']['videos'])} Videos", callback_data="buy_pkg_4")],
+        [InlineKeyboardButton(f"⭐ {format_k(pkgs['5']['stars'])} Stars = {format_k(pkgs['5']['videos'])} Videos", callback_data="buy_pkg_5")],
+        [InlineKeyboardButton(f"⭐ {format_k(pkgs['6']['stars'])} Stars = {format_k(pkgs['6']['videos'])} Videos", callback_data="buy_pkg_6")],
+        [InlineKeyboardButton(f"⭐ {format_k(pkgs['7']['stars'])} Stars = {format_k(pkgs['7']['videos'])} Videos 💎", callback_data="buy_pkg_7")],
         
-        [InlineKeyboardButton("📊 Referral Leaderboard", callback_data="menu_leaderboard")]
+        # Referral Dashboard Button
+        [InlineKeyboardButton("📊 Referral Dashboard", callback_data="menu_leaderboard")]
     ]
     if is_user_admin:
         keyboard.append([InlineKeyboardButton("⚙️ Admin Control Panel", callback_data="menu_admin")])
@@ -215,13 +218,14 @@ async def render_referral_dashboard(update: Update, context: ContextTypes.DEFAUL
 
     for req_invites, vid_count in sorted(ref_rewards.items(), key=lambda x: int(x[0])):
         req_int = int(req_invites)
+        formatted_vids = format_k(vid_count)
         if str(req_invites) in claimed:
-            text += f"• <b>{req_invites} Invites:</b> {vid_count} Videos — ✅ Claimed\n"
+            text += f"• <b>{req_invites} Invites:</b> {formatted_vids} Videos — ✅ Claimed\n"
         elif refs >= req_int:
-            text += f"• <b>{req_invites} Invites:</b> {vid_count} Videos — 🎁 <b>READY TO CLAIM</b>\n"
-            keyboard.append([InlineKeyboardButton(f"🎁 Claim {vid_count} Videos ({req_invites} Invites)", callback_data=f"claim_ref_{req_invites}")])
+            text += f"• <b>{req_invites} Invites:</b> {formatted_vids} Videos — 🎁 <b>READY TO CLAIM</b>\n"
+            keyboard.append([InlineKeyboardButton(f"🎁 Claim {formatted_vids} Videos ({req_invites} Invites)", callback_data=f"claim_ref_{req_invites}")])
         else:
-            text += f"• <b>{req_invites} Invites:</b> {vid_count} Videos — 🔒 Need {req_int - refs} more\n"
+            text += f"• <b>{req_invites} Invites:</b> {formatted_vids} Videos — 🔒 Need {req_int - refs} more\n"
 
     keyboard.append([InlineKeyboardButton("🔙 Back to Main Menu", callback_data="menu_home")])
     markup = InlineKeyboardMarkup(keyboard)
@@ -264,10 +268,16 @@ async def main_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await render_referral_dashboard(update, context, edit_existing=True)
 
     elif data == "menu_leaderboard":
-        top_users = await users_col.find().sort("referrals", -1).limit(10).to_list(length=10)
-        text = "📊 <b>Top Referral Leaderboard</b>\n\n"
-        for idx, u in enumerate(top_users, start=1):
-            text += f"{idx}. <b>{u.get('first_name', 'User')}</b> — {u.get('referrals', 0)} Invites\n"
+        my_referrals = await users_col.find({"referred_by": user_id}).to_list(length=100)
+        
+        text = "📊 <b>Your Personal Referral Dashboard</b>\n\n"
+        if not my_referrals:
+            text += "❌ <i>You haven't referred anyone yet!</i>\n\nShare your link to invite friends and earn free videos!"
+        else:
+            text += f"👥 <b>Your Invited Friends ({len(my_referrals)}):</b>\n\n"
+            for idx, ref_user in enumerate(my_referrals, start=1):
+                first_name = ref_user.get("first_name", "User")
+                text += f"{idx}. <b>{first_name}</b>\n"
         
         keyboard = [[InlineKeyboardButton("🔙 Back to Main Menu", callback_data="menu_home")]]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
@@ -324,14 +334,14 @@ async def main_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         stars, videos = pkg["stars"], pkg["videos"]
         msg_text = (
-            f"📦 <b>{videos} Media Pack</b>\n\n"
-            f"Get {videos} exclusive media items instantly!\n\n"
-            f"💰 <b>Price:</b> {stars} Stars ⭐\n\n"
+            f"📦 <b>{format_k(videos)} Media Pack</b>\n\n"
+            f"Get {format_k(videos)} exclusive media items instantly!\n\n"
+            f"💰 <b>Price:</b> {format_k(stars)} Stars ⭐\n\n"
             f"🔗 Click below to pay securely via Payment Bot."
         )
         pay_link = f"https://t.me/{pay_bot}?start=pkg_{pkg_id}"
         keyboard = [
-            [InlineKeyboardButton(f"💳 Pay {stars} Stars via Payment Bot", url=pay_link)],
+            [InlineKeyboardButton(f"💳 Pay {format_k(stars)} Stars via Payment Bot", url=pay_link)],
             [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="menu_home")]
         ]
         await query.edit_message_text(msg_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
@@ -445,11 +455,10 @@ async def start_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pkg = cfg["packages"].get(pkg_id)
         
         if pkg:
-            # Passes exact integer star amount (e.g., 1000, 5000, 10000) to Telegram Invoice
             await context.bot.send_invoice(
                 chat_id=update.effective_chat.id,
-                title=f"📦 {pkg['videos']} Media Pack",
-                description=f"Get {pkg['videos']} exclusive videos instantly!",
+                title=f"📦 {format_k(pkg['videos'])} Media Pack",
+                description=f"Get {format_k(pkg['videos'])} exclusive videos instantly!",
                 payload=f"stars_payload_pkg_{pkg_id}_{update.effective_user.id}",
                 provider_token="",  # Telegram Stars (XTR)
                 currency="XTR",
