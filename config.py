@@ -14,23 +14,23 @@ DB_NAME = "telegram_unified_bot"
 # ==================== PACKAGES CONFIG ====================
 # Pkg ID: Stars Amount, Videos Amount, Private Channel Link
 PACKAGES = {
-    "1": {"stars": 50, "videos": "50", "link": "https://t.me/+your_channel_link_1"},
-    "2": {"stars": 100, "videos": "120", "link": "https://t.me/+your_channel_link_2"},
-    "3": {"stars": 200, "videos": "250", "link": "https://t.me/+your_channel_link_3"},
-    "4": {"stars": 500, "videos": "650", "link": "https://t.me/+your_channel_link_4"},
-    "5": {"stars": 1000, "videos": "1400", "link": "https://t.me/+your_channel_link_5"},
-    "6": {"stars": 5000, "videos": "6000", "link": "https://t.me/+your_channel_link_6"},
-    "7": {"stars": 10000, "videos": "15000", "link": "https://t.me/+your_channel_link_7"}
+    "1": {"stars": 50, "videos": "50", "link": "https://t.me/+dNbUdp5zVtQ5MjI0"},
+    "2": {"stars": 100, "videos": "120", "link": "https://t.me/+Vw7fhycyX8tiMTI0"},
+    "3": {"stars": 200, "videos": "250", "link": "https://t.me/+pGC2w_IB1ZYwOTFk"},
+    "4": {"stars": 500, "videos": "650", "link": "https://t.me/+xl0V2xGI-fRiMzNk"},
+    "5": {"stars": 1000, "videos": "1400", "link": "https://t.me/+oztFMs9w3Wc3NDRk"},
+    "6": {"stars": 5000, "videos": "6000", "link": "https://t.me/+FvkmSOYzg5o4NWM8"},
+    "7": {"stars": 10000, "videos": "15000", "link": "https://t.me/+kGV5hB6LCmI4NzZk"}
 }
 
 # ==================== REFERRAL REWARDS ====================
 # "Invites Required": Free Videos Amount
 REF_REWARDS = {
-    "2": 10,
-    "5": 25,
-    "10": 50,
-    "25": 125,
+    "2": 5,
+    "5": 15,
+    "10": 30,
+    "25": 100,
     "50": 250,
-    "100": 500,
-    "200": 1000
+    "100": 600,
+    "200": 1400
 }
